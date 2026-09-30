@@ -8,8 +8,11 @@ API key required.
 
 ## How it works
 
-1. **Geocode** — the destination city name is resolved to latitude/longitude
-   via Open-Meteo's geocoding API (first match is used).
+1. **Geocode** — the destination is resolved to latitude/longitude via
+   Open-Meteo's geocoding API. Exact name matches are preferred over fuzzy
+   ones (so "Goa" isn't read as Genoa), an optional `, Country` or `, State`
+   suffix narrows the match, and a few popular regions that aren't towns
+   (Goa, Kerala, Coorg, Kashmir) map to a representative town.
 2. **Forecast** — a daily forecast (min/max temp, precipitation, wind,
    weather code) is fetched for the requested trip length (1–7 days).
 3. **Rules-based recommendations** — the forecast is turned into:
@@ -29,14 +32,17 @@ that an MCP client (e.g. Claude) calls and then reasons over.
 | `get_itinerary_tips` | Day-by-day weather-based planning tips | `city: str`, `days: int = 3` |
 | `get_trip_overview` | Packing list + itinerary tips combined | `city: str`, `days: int = 3` |
 
-`days` is clamped to the range 1–7. `city` is a free-text city name, e.g.
-`"Goa"` or `"Manali"`.
+`days` is clamped to the range 1–7. `city` is a free-text destination,
+optionally with a country (name or 2-letter code) or state to disambiguate,
+e.g. `"Goa"`, `"Manali"`, `"Paris, France"`, `"Goa, Philippines"`. If a
+country/state is given and nothing matches it, the tool reports the location
+as not found rather than guessing somewhere else.
 
 ### Example output
 
 ```
 $ get_packing_list("Manali", 3)
-Packing list for Manali, India (3 days):
+Packing list for Manali, Himachal Pradesh, India (3 days):
   - light jacket or sweater
   - passport/ID
   - phone charger

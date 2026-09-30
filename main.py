@@ -5,7 +5,9 @@ Built with FastMCP, using Open-Meteo (geocoding + forecast) for weather-aware
 packing lists and day-by-day itinerary tips. No API key required.
 """
 
+import unicodedata
 from typing import Any
+
 import httpx
 from mcp.server.fastmcp import FastMCP
 
@@ -25,21 +27,73 @@ WEATHER_CODES = {
 }
 
 
+# Popular destinations that are regions rather than towns, so Open-Meteo's
+# geocoder (which only knows populated places) can't find them by name, or
+# whose plain name resolves to a different place first. Each maps to a
+# representative town, written as a "City, State" query.
+DESTINATION_ALIASES = {
+    "goa": "Panjim, Goa",
+    "kerala": "Kochi, Kerala",
+    "coorg": "Madikeri, Karnataka",
+    "kodagu": "Madikeri, Karnataka",
+    "kashmir": "Srinagar, Jammu and Kashmir",
+    "manali": "Manali, Himachal Pradesh",
+}
+
+
+def _normalize(text: str) -> str:
+    """Case- and accent-insensitive form for comparing place names."""
+    decomposed = unicodedata.normalize("NFKD", text)
+    return "".join(c for c in decomposed if not unicodedata.combining(c)).casefold().strip()
+
+
+def _matches_qualifier(result: dict[str, Any], qualifier: str) -> bool:
+    return qualifier in {
+        _normalize(result.get("country", "")),
+        _normalize(result.get("country_code", "")),
+        _normalize(result.get("admin1", "")),
+    }
+
+
 async def geocode_city(city: str) -> dict[str, Any] | None:
+    """Resolve a destination to coordinates.
+
+    Accepts "City" or "City, Country/State" (e.g. "Goa, Philippines",
+    "Manali, Tamil Nadu", "Paris, US"). Exact name matches win over fuzzy
+    ones, so "Goa" doesn't become Genoa and "Leh" doesn't become Le Havre.
+    """
+    label = city.strip()
+    query = DESTINATION_ALIASES.get(_normalize(label), label)
+    name, _, qualifier = (part.strip() for part in query.partition(","))
+
     async with httpx.AsyncClient() as client:
-        resp = await client.get(GEOCODE_URL, params={"name": city, "count": 1})
+        resp = await client.get(GEOCODE_URL, params={"name": name, "count": 10})
         resp.raise_for_status()
-        data = resp.json()
-        results = data.get("results")
-        if not results:
-            return None
-        r = results[0]
-        return {
-            "name": r["name"],
-            "country": r.get("country", ""),
-            "latitude": r["latitude"],
-            "longitude": r["longitude"],
-        }
+        results = resp.json().get("results") or []
+
+    if qualifier:
+        # A stated country/state is a hard filter: better "not found" than
+        # a same-named place somewhere else.
+        results = [r for r in results if _matches_qualifier(r, _normalize(qualifier))]
+    if not results:
+        return None
+
+    exact = [r for r in results if _normalize(r["name"]) == _normalize(name)]
+    r = (exact or results)[0]
+
+    display_name = r["name"]
+    if query != label and _normalize(r["name"]) != _normalize(label):
+        display_name = f"{label.title()} ({r['name']})"  # e.g. "Goa (Panjim)"
+    # Include the state/province for disambiguation unless it just repeats the name.
+    region = r.get("admin1", "")
+    if _normalize(region) in (_normalize(r["name"]), _normalize(label)):
+        region = ""
+    return {
+        "name": display_name,
+        "country": ", ".join(p for p in (region, r.get("country", "")) if p),
+        "latitude": r["latitude"],
+        "longitude": r["longitude"],
+    }
 
 
 async def fetch_forecast(lat: float, lon: float, days: int) -> dict[str, Any]:
@@ -118,7 +172,8 @@ async def get_packing_list(city: str, days: int = 3) -> str:
     """Generate a weather-aware packing list for a trip.
 
     Args:
-        city: Destination city name, e.g. "Goa" or "Manali"
+        city: Destination city, optionally with country or state to disambiguate,
+              e.g. "Goa", "Manali", "Paris, France" or "Manali, Tamil Nadu"
         days: Trip length in days (1-7)
     """
     days = max(1, min(days, 7))
@@ -140,7 +195,8 @@ async def get_itinerary_tips(city: str, days: int = 3) -> str:
     """Generate day-by-day weather-based itinerary planning tips for a trip.
 
     Args:
-        city: Destination city name, e.g. "Goa" or "Manali"
+        city: Destination city, optionally with country or state to disambiguate,
+              e.g. "Goa", "Manali", "Paris, France" or "Manali, Tamil Nadu"
         days: Trip length in days (1-7)
     """
     days = max(1, min(days, 7))
@@ -162,7 +218,8 @@ async def get_trip_overview(city: str, days: int = 3) -> str:
     """Combined packing list + itinerary tips for a destination in one call.
 
     Args:
-        city: Destination city name
+        city: Destination city, optionally with country or state to disambiguate,
+              e.g. "Goa", "Manali", "Paris, France" or "Manali, Tamil Nadu"
         days: Trip length in days (1-7)
     """
     days = max(1, min(days, 7))
